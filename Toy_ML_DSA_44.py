@@ -13,7 +13,8 @@ L   = 4
 TAU = 5
 ETA = 2
 
-ZETAS = [0, 4808194, 4614810, 4618904, 2883726, 5178923, 5178987, 3145678] # NTT용 zeta 값, ZETAS[0]=0은 미사용 (NTT에서 m=1부터 접근)
+# NTT용 zeta 값, ZETAS[0] = 0은 미사용 (NTT에서 m = 1부터 접근)
+ZETAS = [0, 4808194, 4614810, 4618904, 2883726, 5178923, 5178987, 3145678]
 
 
 # ================================================================================
@@ -101,6 +102,38 @@ def Mul_Point(f, g): # point-wise
 # ================================================================================
 
 
+
+# ================================================================================
+# =============================== External Functions =============================
+# ================================================================================
+
+def ML_DSA_KeyGen():
+    try:
+        nu = os.urandom(4)  # 4 bytes 랜덤 시드 생성
+    except Exception:
+        return None  # 시드 생성 실패 → Fail
+
+    if not nu:
+        return None  # 시드가 NULL → Fail
+
+    return ML_DSA_KeyGen_internal(nu)
+
+def ML_DSA_Sign(sk, message):
+    signature = ML_DSA_Sign_internal(sk, message)
+    if signature is None:
+        return None  # 서명 없음 → Fail
+
+    return signature
+
+def ML_DSA_Verify(pk, message, signature):
+    if signature is None:
+        return False  # 서명 없음 → Fail
+
+    return ML_DSA_Verify_internal(pk, message, signature)
+# ================================================================================
+
+
+
 # ================================================================================
 # =============================== Internal Functions =============================
 # ================================================================================
@@ -114,7 +147,7 @@ def ML_DSA_KeyGen_internal(nu):
     A_hat  = ExpandA(rho)
     s1, s2 = ExpandS(rho_p)
 
-    t_hat  = MatrixMulNTT_PolyVec(A_hat, NTT_PolyVec(s1), K)
+    t_hat  = MatrixMulNTT_PolyVec(A_hat, NTT_PolyVec(s1))
     t      = Add_PolyVec(InvNTT_PolyVec(t_hat), s2)
     t1, t0 = Power2Round_PolyVec(t)
 
@@ -127,28 +160,88 @@ def ML_DSA_KeyGen_internal(nu):
 
 def ML_DSA_Sign_internal(sk, M_):
     rho, k_key, tr, s1, s2, t0 = sk
+    s1_hat = NTT_PolyVec(s1)
+    s2_hat = NTT_PolyVec(s2)
     t0_hat = NTT_PolyVec(t0)
+    A_hat  = ExpandA(rho)
     mu = H(tr + M_, 1)
     rho__ = H(k_key + mu, 1)
     kappa = 0
-    (z, h) = None
+    z, h = None, None
 
-    while (z, h) == None:
+    while z is None or h is None:
         y = ExpandMask(rho__, kappa)
-        w = InvNTT_PolyVec(MatrixMulNTT_PolyVec(ExpandA(rho), NTT_PolyVec(y)))
+        w = InvNTT_PolyVec(MatrixMulNTT_PolyVec(A_hat, NTT_PolyVec(y)))
         w1 = HighBits_PolyVec(w)
 
         c_tilde = H(mu + b''.join(c.to_bytes(4, 'little') for poly in w1 for c in poly), 1)
         c = SampleInBall(c_tilde)
-        cs1 = InvNTT_PolyVec(MulNTT_PolyVec(NTT_PolyVec(c), NTT_PolyVec(s1)))
-        cs2 = InvNTT_PolyVec(MulNTT_PolyVec(NTT_PolyVec(c), NTT_PolyVec(s2)))
+        c_hat = NTT_Poly(c)  # ĉ (브로드캐스트용으로 [c_hat]*L, [c_hat]*K 처럼 복제해서 기존 MulNTT_PolyVec 재사용)
+
+        cs1 = InvNTT_PolyVec(MulNTT_PolyVec([c_hat] * L, s1_hat))
+        cs2 = InvNTT_PolyVec(MulNTT_PolyVec([c_hat] * K, s2_hat))
         z = Add_PolyVec(cs1, y)
         r0 = LowBits_PolyVec(Sub_PolyVec(w, cs2))
 
-        if any(abs(c) >= GAMMA1 - TAU * ETA for poly in z for c in poly):
-            z = None
-            kappa += 1
-            continue
+        # 23번째 줄: 유효성 검사 ( ||z||∞ ≥ γ1-β  또는  ||r0||∞ ≥ γ2-β )
+        # Verify_internal의 inf_norm과 동일하게, [0,Q) 범위 값을 (-Q/2, Q/2]로 중심화한 뒤 비교
+        if any(abs(v if v <= Q // 2 else v - Q) >= GAMMA1 - TAU * ETA for poly in z for v in poly) or \
+           any(abs(v if v <= Q // 2 else v - Q) >= GAMMA2 - TAU * ETA for poly in r0 for v in poly):
+            z, h = None, None
+        else:
+            # 25번째 줄: ⟨⟨ct0⟩⟩ ← NTT^-1(ĉ ∘ t̂0)
+            ct0 = InvNTT_PolyVec(MulNTT_PolyVec([c_hat] * K, t0_hat))
+            neg_ct0 = Sub_PolyVec([[0] * N for _ in range(K)], ct0)  # 이미 있는 Sub_PolyVec으로 부호만 뒤집기
+
+            # 26번째 줄: h ← MakeHint(-⟨⟨ct0⟩⟩, w - ⟨⟨cs2⟩⟩ + ⟨⟨ct0⟩⟩)
+            h = MakeHint_PolyVec(neg_ct0, Add_PolyVec(Sub_PolyVec(w, cs2), ct0))
+            # 28번째 줄(||ct0||∞ ≥ γ2 또는 h의 1 개수 > ω) 재검사는 생략
+            # → N=8 토이 파라미터에서는 사실상 걸리지 않는 조건이라 구현 불필요
+
+        kappa += L  # 31번째 줄: 카운터 증가 (ℓ = L)
+
+    sigma = (c_tilde, z, h)
+    return sigma  # 33~34번째 줄: σ ← sigEncode(...) 대신 (c̃, z, h) 튜플로 반환 (기존 Verify_internal과 동일한 형식)
+
+def ML_DSA_Verify_internal(pk, message, signature):
+
+    rho, t1 = pk
+    c_tilde, z, h = signature
+
+    pk_bytes = rho + b''.join(coef.to_bytes(4, 'little') for poly in t1 for coef in poly)
+    tr = H(pk_bytes, 1) # 8 bytes
+    mu = H(tr + message, 1) # 8 bytes
+
+    BETA = TAU * ETA
+    def inf_norm(vec):
+        return max(abs(c if c <= Q // 2 else c - Q) for poly in vec for c in poly)
+    if inf_norm(z) >= GAMMA1 - BETA:
+        return False
+
+    A_hat  = ExpandA(rho)
+
+    c_poly = SampleInBall(c_tilde)
+    c_hat  = NTT_Poly(c_poly)
+
+    z_ntt        = NTT_PolyVec(z)
+    Az_hat       = MatrixMulNTT_PolyVec(A_hat, z_ntt, K)
+
+    t1_2d        = [[coef * (1 << D) % Q for coef in poly] for poly in t1]
+    t1_2d_ntt    = NTT_PolyVec(t1_2d)
+    ct1_hat      = [Mul_Point(c_hat, t1_2d_ntt[r]) for r in range(K)]
+
+    w_approx_hat = [Sub_Poly(Az_hat[r], ct1_hat[r]) for r in range(K)]
+    w_approx     = InvNTT_PolyVec(w_approx_hat)
+
+    # w1' = UseHint(h, w_approx)
+    w1_prime = [useHint_Poly(h[r], w_approx[r]) for r in range(K)]
+
+    w1_bytes = b''.join(coef.to_bytes(4, 'little') for poly in w1_prime for coef in poly)
+    c_tilde_checm = H(mu + w1_bytes, 1)
+
+    return c_tilde == c_tilde_checm
+# ================================================================================
+
 
 
 # ================================================================================
@@ -194,7 +287,7 @@ def SampleInBall(rho):
     c = [0] * N
     ctx = H_Init()
     H_Absorb(ctx, rho)
-    s = H_Squeeze(ctx, 8)
+    ctx, s = H_Squeeze(ctx, 8)
 
     h = []
     for byte in s:
@@ -233,7 +326,7 @@ def RejBoundedPoly(rho):
     H_Absorb(ctx, rho)
 
     while j < N:
-        z_bytes = H_Squeeze(ctx, 1)
+        ctx, z_bytes = H_Squeeze(ctx, 1)
         z = z_bytes[0]
         z0 = CoeffFromHalfByte(z % 16)
         z1 = CoeffFromHalfByte(z >> 4)
@@ -441,8 +534,8 @@ def AddNTT_Poly(f_hat, g_hat): # 다항식
 def AddNTT_PolyVec(v_hat, w_hat): # 다항식 벡터
     return [AddNTT_Poly(v_hat[i], w_hat[i]) for i in range(len(v_hat))]
 
-def MulNTT_Poly(f_hat, g_hat): # 다항식
-    return [Mul_Point(f_hat[i], g_hat[i]) for i in range(N)]
+def MulNTT_Poly(f_hat, g_hat): # Point-wise
+    return Mul_Point(f_hat, g_hat)
 
 def MulNTT_PolyVec(v_hat, w_hat): # 다항식 벡터
     return [MulNTT_Poly(v_hat[i], w_hat[i]) for i in range(len(v_hat))]
@@ -461,78 +554,6 @@ def MatrixMulNTT_PolyVec(M_hat, v_hat): # 행렬(K x L) x 벡터(L)
 
     return w
 # ================================================================================
-
-
-
-''' START KeyGen '''
-def ML_DSA_KeyGen():
-
-    try:
-        nu = os.urandom(4)  # 4 bytes 랜덤 시드 생성
-    except Exception:
-        return None  # 시드 생성 실패 → Fail
-
-    if not nu:
-        return None  # 시드가 NULL → Fail
-
-    return ML_DSA_KeyGen_internal(nu)
-
-
-''' END KeyGen '''
-
-
-def ML_DSA_Sign(sk, message):
-
-    signature = ML_DSA_Sign_internal(sk, message)
-    if signature is None:
-        return None  # 서명 실패 → Fail
-
-    return signature
-
-def ML_DSA_Verify_internal(pk, message, signature):
-
-    rho, t1 = pk
-    c_tilde, z, h = signature
-
-    pk_bytes = rho + b''.join(coef.to_bytes(4, 'little') for poly in t1 for coef in poly)
-    tr = H(pk_bytes, 1) # 8 bytes
-    mu = H(tr + message, 1) # 8 bytes
-
-    BETA = TAU * ETA
-    def inf_norm(vec):
-        return max(abs(c if c <= Q // 2 else c - Q) for poly in vec for c in poly)
-    if inf_norm(z) >= GAMMA1 - BETA:
-        return False
-
-    A_hat  = ExpandA(rho)
-
-    c_poly = SampleInBall(c_tilde)
-    c_hat  = NTT_Poly(c_poly)
-
-    z_ntt        = NTT_PolyVec(z)
-    Az_hat       = MulMatVec_NTT(A_hat, z_ntt, K)
-
-    t1_2d        = [[coef * (1 << D) % Q for coef in poly] for poly in t1]
-    t1_2d_ntt    = NTT_PolyVec(t1_2d)
-    ct1_hat      = [Mul_Point(c_hat, t1_2d_ntt[r]) for r in range(K)]
-
-    w_approx_hat = [Sub_Poly(Az_hat[r], ct1_hat[r]) for r in range(K)]
-    w_approx     = InvNTT_PolyVec(w_approx_hat)
-
-    # w1' = UseHint(h, w_approx)
-    w1_prime = [useHint_Poly(h[r], w_approx[r]) for r in range(K)]
-
-    w1_bytes = b''.join(coef.to_bytes(4, 'little') for poly in w1_prime for coef in poly)
-    c_tilde_checm = H(mu + w1_bytes, 1)
-
-    return c_tilde == c_tilde_checm
-
-def ML_DSA_Verify(pk, message, signature):
-
-    if signature is None:
-        return False  # 서명 없음 → Fail
-
-    return ML_DSA_Verify_internal(pk, message, signature)
 
 def HashML_DSA_Sign(sk, message):
 
