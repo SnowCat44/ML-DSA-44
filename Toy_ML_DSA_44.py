@@ -71,32 +71,32 @@ def G_Squeeze(ctx_state, length: int) -> tuple:
 # ================================================================================
 
 # =================================== 덧셈 연산 ====================================
-def Add(a, b): # 계수
+def Add(a, b): # 계수 덧셈
     return (a + b) % Q
 
-def Add_Poly(f, g): # 다항식
+def Add_Poly(f, g): # 다항식 덧셈
     return [Add(f[i], g[i]) for i in range(N)]
 
-def Add_PolyVec(v, w): # 다항식 벡터
+def Add_PolyVec(v, w): # 벡터 덧셈
     return [Add_Poly(v[i], w[i]) for i in range(len(v))]
 # ================================================================================
 
 # =================================== 뺄셈 연산 ====================================
-def Sub(a, b): # 계수
+def Sub(a, b): # 계수 뺄셈
     return (a - b) % Q
 
-def Sub_Poly(f, g): # 다항식
+def Sub_Poly(f, g): # 다항식 뺄셈
     return [Sub(f[i], g[i]) for i in range(N)]
 
-def Sub_PolyVec(v, w): # 다항식 벡터
+def Sub_PolyVec(v, w): # 벡터 뺄셈
     return [Sub_Poly(v[i], w[i]) for i in range(len(v))]
 # ================================================================================
 
 # =================================== 곱셈 연산 ====================================
-def Mul(a, b): # 계수
+def Mul(a, b): # 계수 곱셈
     return (a * b) % Q
 
-def Mul_Point(f, g): # point-wise
+def Mul_Point(f, g): # 다항식 곱 (성분별)
     return [Mul(f[i], g[i]) for i in range(N)]
 # ================================================================================
 
@@ -398,7 +398,7 @@ def Power2Round_Poly(r): # 다항식
 
     return r1, r0
 
-def Power2Round_PolyVec(r): # 다항식 벡터
+def Power2Round_PolyVec(r): # 벡터
     r1 = []
     r0 = []
 
@@ -479,7 +479,7 @@ def UseHint_PolyVec(h, r):
 # ================================================================================
 
 # ===================================  NTT 변환 ===================================
-def NTT_Poly(a): # 다항식 변환
+def NTT_Poly(a): # 다항식 정변환
     a_hat = list(a)
 
     m = 0
@@ -499,7 +499,7 @@ def NTT_Poly(a): # 다항식 변환
 
     return a_hat
 
-def InvNTT_Poly(a_hat): # 다항식 변환
+def InvNTT_Poly(a_hat): # 다항식 역변환
     a = list(a_hat)
 
     m = N
@@ -524,35 +524,41 @@ def InvNTT_Poly(a_hat): # 다항식 변환
 
     return a
 
-def NTT_PolyVec(a): # 다항식 벡터 변환
+def NTT_PolyVec(a): # 벡터 정변환
     return [NTT_Poly(a[i]) for i in range(len(a))]
 
-def InvNTT_PolyVec(a_hat): # 다항식 벡터 변환
+def InvNTT_PolyVec(a_hat): # 벡터 역변환
     return [InvNTT_Poly(a_hat[i]) for i in range(len(a_hat))]
 # ================================================================================
 
 # =================================== NTT 연산 ====================================
-def AddNTT_Poly(f_hat, g_hat): # 다항식
+def AddNTT_Poly(f_hat, g_hat): # NTT 다항식 덧셈
     return [Add(f_hat[i], g_hat[i]) for i in range(N)]
 
-def AddNTT_PolyVec(v_hat, w_hat): # 다항식 벡터
+def AddNTT_PolyVec(v_hat, w_hat): # NTT 벡터 덧셈
     return [AddNTT_Poly(v_hat[i], w_hat[i]) for i in range(len(v_hat))]
 
-def MulNTT_Poly(f_hat, g_hat): # Point-wise
+def SubNTT_Poly(f_hat, g_hat): # NTT 다항식 뺄셈
+    return [Sub(f_hat[i], g_hat[i]) for i in range(N)]
+
+def SubNTT_PolyVec(v_hat, w_hat): # NTT 벡터 뺄셈
+    return [SubNTT_Poly(v_hat[i], w_hat[i]) for i in range(len(v_hat))]
+
+def MulNTT_Poly(f_hat, g_hat): # NTT 다항식 곱 (성분별)
     return Mul_Point(f_hat, g_hat)
 
-def MulNTT_PolyVec(v_hat, w_hat): # 다항식 벡터
+def ScalarMulNTT_Poly(f_hat, scalar): # NTT 다항식 스칼라배
+    return [Mul(f_hat[i], scalar) for i in range(N)]
+
+def MulNTT_PolyVec(v_hat, w_hat): # NTT 벡터 곱 (성분별)
     return [MulNTT_Poly(v_hat[i], w_hat[i]) for i in range(len(v_hat))]
 
-def ScalarMulNTT_Poly(f_hat, scalar): # 다항식
-    return [MulNTT_Poly(scalar, f_hat[i]) for i in range(N)]
-
-def MatrixMulNTT_PolyVec(M_hat, v_hat): # 행렬(K x L) x 벡터(L)
+def MatrixMulNTT_PolyVec(M_hat, v_hat): # NTT 행렬 x 벡터
     w = []
 
-    for i in range(K):
+    for i in range(len(M_hat)):
         acc = [0] * N
-        for j in range(L):
+        for j in range(len(v_hat)):
             acc = AddNTT_Poly(acc, MulNTT_Poly(M_hat[i][j], v_hat[j]))
         w.append(acc)
 
